@@ -105,8 +105,8 @@ jobs:
             CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf-)
-          make -j"$(nproc)" "${MAKE_ARGS[@]}" Image 2>&1 | tee ../build.log | tail -60
-          make -j"$(nproc)" "${MAKE_ARGS[@]}" modules 2>&1 | tee -a ../build.log | tail -30
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" Image 2>&1 | tee ../build.log
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" modules 2>&1 | tee -a ../build.log
           echo "=== UTS_RELEASE ==="
           cat out/include/generated/utsrelease.h || true
           ls -l out/arch/arm64/boot/Image
@@ -136,6 +136,13 @@ jobs:
           ls modules_out | head -30
           tar -czf modules_sukisu.tar.gz -C modules_out .
 
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+
       - name: Upload boot image + modules
         uses: actions/upload-artifact@v4
         with:
@@ -143,7 +150,6 @@ jobs:
           path: |
             repack/new-boot.img
             modules_sukisu.tar.gz
-            build.log
 
       - name: Upload config for reference
         if: always()
