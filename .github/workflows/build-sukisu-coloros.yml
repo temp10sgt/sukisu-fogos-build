@@ -97,7 +97,7 @@ jobs:
       - name: Apply manual hook patches (kernel 5.4)
         run: |
           cd kernel
-          git apply --verbose ../patches/0001-sukisu-nova-manual-hooks-5.4.patch ../patches/0003-newfstat-ret-hook.patch
+          git apply --verbose ../patches/0001-sukisu-nova-manual-hooks-5.4.patch
 
       - name: Configure kernel (ColorOS config via extract-ikconfig + dynamic vermagic)
         run: |
