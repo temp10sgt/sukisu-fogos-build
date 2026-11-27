@@ -29,7 +29,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf bc bison flex libssl-dev unzip
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf bc bison flex libssl-dev unzip ccache
 
       - name: Clone kernel source (fogos 17.0)
         run: |
@@ -38,7 +38,15 @@ jobs:
           git log --oneline -1
           grep -E "^SUBLEVEL" Makefile
 
+      - name: Cache toolchain
+        id: tccache
+        uses: actions/cache@v4
+        with:
+          path: ~/tc
+          key: tc-proton-v1
+
       - name: Download toolchain (proton-clang)
+        if: steps.tccache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$HOME/tc"
           curl -LSs -o "$HOME/tc/proton.zip" "$PROTON_CLANG_URL"
@@ -47,6 +55,18 @@ jobs:
           rm -f "$HOME/tc/proton-clang-master/bin/ld" "$HOME/tc/proton-clang-master/bin/ld.gold"
           ls "$HOME/tc"
           echo "PROTON_BIN=$HOME/tc/proton-clang-master/bin" >> "$GITHUB_ENV"
+
+      - name: Set toolchain path (cache hit)
+        if: steps.tccache.outputs.cache-hit == 'true'
+        run: echo "PROTON_BIN=$HOME/tc/proton-clang-master/bin" >> "$GITHUB_ENV"
+
+      - name: Cache ccache objects
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.run_id }}
+          restore-keys: |
+            ccache-
 
       - name: Download magiskboot (x86_64, from Magisk APK)
         run: |
@@ -99,10 +119,13 @@ jobs:
       - name: Build kernel + modules
         run: |
           export PATH="$PROTON_BIN:$PATH"
+          export CCACHE_DIR="$HOME/.ccache"
+          export CCACHE_MAXSIZE=8G
+          export CCACHE_SLOPPINESS="file_macro,time_macros,include_file_mtime,include_file_ctime"
           cd kernel
           set -o pipefail
           MAKE_ARGS=(O=out ARCH=$ARCH
-            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip
+            CC="ccache clang" LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf-)
           make -j"$(nproc)" "${MAKE_ARGS[@]}" Image 2>&1 | tee ../build.log
