@@ -1,0 +1,152 @@
+name: Build SukiSU Nova kernel (fogos 17.0)
+
+on:
+  workflow_dispatch:
+
+env:
+  ARCH: arm64
+  KERNEL_REPO: https://github.com/fogos-5-4/android_kernel_motorola_sm6375.git
+  KERNEL_BRANCH: "17.0"
+  PROTON_CLANG_URL: https://codeload.github.com/kdrag0n/proton-clang/zip/refs/heads/master
+  MAGISK_APK_URL: https://github.com/topjohnwu/Magisk/releases/download/v31.1/Magisk-v31.1.apk
+  SUKISU_REPO: https://github.com/SukiSU-Nova/SukiSU-Nova
+  SUKISU_BRANCH: builtin
+  BOOT_BASE_URL: https://github.com/${{ github.repository }}/releases/download/boot-base/boot_pixelos_orig.img
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout build files
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf bc bison flex libssl-dev unzip
+
+      - name: Clone kernel source (fogos 17.0)
+        run: |
+          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
+          cd kernel
+          git log --oneline -1
+          grep -E "^SUBLEVEL" Makefile
+
+      - name: Download toolchain (proton-clang)
+        run: |
+          mkdir -p "$HOME/tc"
+          curl -LSs -o "$HOME/tc/proton.zip" "$PROTON_CLANG_URL"
+          unzip -q "$HOME/tc/proton.zip" -d "$HOME/tc"
+          ls "$HOME/tc"
+          echo "PROTON_BIN=$HOME/tc/proton-clang-master/bin" >> "$GITHUB_ENV"
+
+      - name: Download magiskboot (x86_64, from Magisk APK)
+        run: |
+          curl -LSs -o /tmp/Magisk.apk "$MAGISK_APK_URL"
+          unzip -j /tmp/Magisk.apk "lib/x86_64/libmagiskboot.so" -d /tmp/mb
+          chmod +x /tmp/mb/libmagiskboot.so
+          /tmp/mb/libmagiskboot.so | head -1 || true
+          echo "MAGISKBOOT=/tmp/mb/libmagiskboot.so" >> "$GITHUB_ENV"
+
+      - name: Integrate SukiSU Nova (builtin branch, manual hooks)
+        run: |
+          cd kernel
+          git clone --depth=1 -b "$SUKISU_BRANCH" "$SUKISU_REPO" KernelSU
+          ln -sf "$(realpath --relative-to=drivers KernelSU/kernel)" drivers/kernelsu
+          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          echo "--- integration check ---"
+          ls -l drivers/kernelsu
+          tail -2 drivers/Makefile
+          grep -n 'kernelsu/Kconfig' drivers/Kconfig
+
+      - name: Apply manual hook patches (kernel 5.4)
+        run: |
+          cd kernel
+          git apply --verbose ../patches/*.patch
+          echo "--- applied ---"
+          git diff --stat
+
+      - name: Configure kernel (device config + SukiSU Nova flags)
+        run: |
+          cd kernel
+          mkdir -p out
+          cp ../kernel-config/pixelos-fogos.config out/.config
+          ./scripts/config --file out/.config \
+            -e KSU \
+            -e KPM \
+            -e KALLSYMS \
+            -e KALLSYMS_ALL \
+            -d KSU_SUSFS \
+            -d CC_WERROR \
+            -d LTO \
+            -d THINLTO \
+            -d LTO_CLANG \
+            -u LOCALVERSION_AUTO \
+            --set-str LOCALVERSION "-WKCW/d526d46d"
+          make O=out ARCH=$ARCH olddefconfig
+          echo "=== relevant config ==="
+          grep -E "CONFIG_(KSU|KPM|KALLSYMS|CC_WERROR|KSU_SUSFS|LOCALVERSION|LTO)[= ]" out/.config || true
+
+      - name: Build kernel + modules
+        run: |
+          export PATH="$PROTON_BIN:$PATH"
+          cd kernel
+          set -o pipefail
+          MAKE_ARGS=(O=out ARCH=$ARCH
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump
+            HOSTCC=clang HOSTLD=ld.lld HOSTAR=llvm-ar
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf-)
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" Image 2>&1 | tee ../build.log | tail -60
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" modules 2>&1 | tee -a ../build.log | tail -30
+          echo "=== UTS_RELEASE ==="
+          cat out/include/generated/utsrelease.h || true
+          ls -l out/arch/arm64/boot/Image
+          echo "=== KSU objects built ==="
+          find out/drivers -path '*kernelsu*' -name '*.o' | head -5
+          echo "=== modules built ==="
+          find out -name '*.ko' | wc -l
+
+      - name: Repack boot.img (keep original dtb/ramdisk/header)
+        run: |
+          mkdir -p repack && cd repack
+          curl -LSs -o boot_base.img "$BOOT_BASE_URL"
+          ls -l boot_base.img
+          "$MAGISKBOOT" unpack boot_base.img
+          echo "=== unpacked ==="
+          ls -l
+          # replace ONLY the kernel image; keep original dtb/ramdisk/header intact
+          cp ../kernel/out/arch/arm64/boot/Image kernel
+          "$MAGISKBOOT" repack boot_base.img new-boot.img
+          ls -l new-boot.img
+          cd ..
+
+      - name: Collect vendor modules
+        run: |
+          mkdir -p modules_out
+          find kernel/out -name '*.ko' -exec cp {} modules_out/ \;
+          ls modules_out | head -30
+          tar -czf modules_sukisu.tar.gz -C modules_out .
+
+      - name: Upload boot image + modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: sukisu-nova-fogos
+          path: |
+            repack/new-boot.img
+            modules_sukisu.tar.gz
+            build.log
+
+      - name: Upload config for reference
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-config
+          path: kernel/out/.config
