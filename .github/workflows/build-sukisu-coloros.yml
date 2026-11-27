@@ -43,6 +43,8 @@ jobs:
           mkdir -p "$HOME/tc"
           curl -LSs -o "$HOME/tc/proton.zip" "$PROTON_CLANG_URL"
           unzip -q "$HOME/tc/proton.zip" -d "$HOME/tc"
+          # remove old GNU ld that cannot link host tools against modern glibc (RELR)
+          rm -f "$HOME/tc/proton-clang-master/bin/ld" "$HOME/tc/proton-clang-master/bin/ld.gold"
           echo "PROTON_BIN=$HOME/tc/proton-clang-master/bin" >> "$GITHUB_ENV"
 
       - name: Download magiskboot (x86_64, from Magisk APK)
@@ -119,7 +121,6 @@ jobs:
           MAKE_ARGS=(O=out ARCH=$ARCH
             CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump
-            HOSTCC=clang HOSTLD=ld.lld HOSTAR=llvm-ar
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf-)
           make -j"$(nproc)" "${MAKE_ARGS[@]}" Image 2>&1 | tee ../build.log | tail -60
           make -j"$(nproc)" "${MAKE_ARGS[@]}" modules 2>&1 | tee -a ../build.log | tail -30
