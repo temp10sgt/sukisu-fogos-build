@@ -1,12 +1,12 @@
-name: Build SukiSU Nova kernel for ColorOS (fogos)
+name: Build SukiSU Nova kernel for ColorOS (LineageOS 24.0 base)
 
 on:
   workflow_dispatch:
 
 env:
   ARCH: arm64
-  KERNEL_REPO: https://github.com/fogos-5-4/android_kernel_motorola_sm6375.git
-  KERNEL_BRANCH: "17.0"
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_motorola_sm6375.git
+  KERNEL_BRANCH: "lineage-24.0"
   PROTON_CLANG_URL: https://codeload.github.com/kdrag0n/proton-clang/zip/refs/heads/master
   MAGISK_APK_URL: https://github.com/topjohnwu/Magisk/releases/download/v31.1/Magisk-v31.1.apk
   SUKISU_REPO: https://github.com/SukiSU-Nova/SukiSU-Nova
@@ -31,7 +31,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf bc bison flex libssl-dev unzip binutils ccache
 
-      - name: Clone kernel source (fogos 17.0)
+      - name: Clone kernel source (LineageOS 24.0 fogos)
         run: |
           git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
           cd kernel
@@ -63,9 +63,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-coloros-${{ github.run_id }}
+          key: ccache-coloros-los-${{ github.run_id }}
           restore-keys: |
-            ccache-coloros-
+            ccache-coloros-los-
 
       - name: Download magiskboot (x86_64, from Magisk APK)
         run: |
@@ -97,7 +97,7 @@ jobs:
       - name: Apply manual hook patches (kernel 5.4)
         run: |
           cd kernel
-          git apply --verbose ../patches/*.patch
+          git apply --verbose ../patches/0001-sukisu-nova-manual-hooks-5.4.patch ../patches/0003-newfstat-ret-hook.patch
 
       - name: Configure kernel (ColorOS config via extract-ikconfig + dynamic vermagic)
         run: |
@@ -176,13 +176,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-coloros
+          name: build-log-coloros-los
           path: build.log
 
       - name: Upload boot image + modules
         uses: actions/upload-artifact@v4
         with:
-          name: sukisu-nova-fogos-coloros
+          name: sukisu-nova-fogos-coloros-los
           path: |
             repack/new-boot.img
             modules_coloros.tar.gz
@@ -191,6 +191,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-config-coloros
+          name: kernel-config-coloros-los
           path: kernel/out/.config
           include-hidden-files: true
