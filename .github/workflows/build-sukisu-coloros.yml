@@ -130,14 +130,10 @@ jobs:
           SUB=$(echo "$KVER" | grep -oE "^[0-9]+\.[0-9]+\.[0-9]+" | cut -d. -f3)
           REST=${KVER#"$MAJMIN.$SUB"}
           sed -i "s/^SUBLEVEL = .*/SUBLEVEL = $SUB/" Makefile
+          # empty .scmversion makes setlocalversion return "" instead of "+" on this untagged shallow clone
+          printf '' > .scmversion
           ./scripts/config --file out/.config -d LOCALVERSION_AUTO --set-str LOCALVERSION "$REST"
           make O=out ARCH=$ARCH olddefconfig
-          # commit all tracked changes (patches, KSU wiring, chmod, SUBLEVEL) so
-          # setlocalversion does not append "+" (dirty tree) to the release string
-          git config user.email build@example.com
-          git config user.name build
-          git add -u
-          git commit -q -m "SukiSU Nova integration + manual hooks"
           echo "=== relevant config ==="
           grep -E "CONFIG_(KSU|KPM|KALLSYMS|CC_WERROR|KSU_SUSFS|LOCALVERSION|LTO)[= ]" out/.config || true
 
