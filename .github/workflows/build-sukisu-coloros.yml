@@ -2,6 +2,11 @@ name: Build SukiSU Nova kernel for ColorOS (LineageOS 24.0 base)
 
 on:
   workflow_dispatch:
+    inputs:
+      enable_ksu:
+        description: "Integrate SukiSU Nova (set false for vanilla diagnostic build)"
+        type: boolean
+        default: true
 
 env:
   ARCH: arm64
@@ -85,6 +90,7 @@ jobs:
           grep -a -m3 -oE "Linux version [0-9][^ ]*" kernel || true
 
       - name: Integrate SukiSU Nova (builtin branch, manual hooks)
+        if: ${{ inputs.enable_ksu }}
         run: |
           cd kernel
           git clone --depth=1 -b "$SUKISU_BRANCH" "$SUKISU_REPO" KernelSU
@@ -95,6 +101,7 @@ jobs:
           sed -i '/#include <linux\/static_call.h>/d' KernelSU/kernel/kernel_includes.h
 
       - name: Apply manual hook patches (kernel 5.4)
+        if: ${{ inputs.enable_ksu }}
         run: |
           cd kernel
           git apply --verbose ../patches/0001-sukisu-nova-manual-hooks-5.4.patch
@@ -112,17 +119,27 @@ jobs:
             cp out/.config out/.config.defconfig
             cp out/.config.defconfig out/.config
           fi
-          # 2) SukiSU Nova flags
-          ./scripts/config --file out/.config \
-            -e KSU \
-            -e KPM \
-            -e KALLSYMS \
-            -e KALLSYMS_ALL \
-            -d KSU_SUSFS \
-            -d CC_WERROR \
-            -d LTO \
-            -d THINLTO \
-            -d LTO_CLANG
+          # 2) SukiSU Nova flags (only when KSU integration is enabled)
+          if [ "${{ inputs.enable_ksu }}" = "true" ]; then
+            ./scripts/config --file out/.config \
+              -e KSU \
+              -e KPM \
+              -e KALLSYMS \
+              -e KALLSYMS_ALL \
+              -d KSU_SUSFS \
+              -d CC_WERROR \
+              -d LTO \
+              -d THINLTO \
+              -d LTO_CLANG
+          else
+            ./scripts/config --file out/.config \
+              -d KSU \
+              -d KPM \
+              -d CC_WERROR \
+              -d LTO \
+              -d THINLTO \
+              -d LTO_CLANG
+          fi
           # 3) dynamic vermagic: match the ColorOS kernel release string exactly
           KVER=$(grep -a -m1 -oE "Linux version [0-9]+\.[0-9]+\.[0-9]+[^ ]*" ../repack/kernel | head -1 | awk '{print $3}')
           echo "TARGET KERNEL RELEASE: $KVER"
@@ -182,7 +199,7 @@ jobs:
       - name: Upload boot image + modules
         uses: actions/upload-artifact@v4
         with:
-          name: sukisu-nova-fogos-coloros-los
+          name: fogos-coloros${{ inputs.enable_ksu == false && '-vanilla' || '-sukisu' }}
           path: |
             repack/new-boot.img
             modules_coloros.tar.gz
