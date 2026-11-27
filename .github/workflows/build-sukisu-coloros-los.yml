@@ -1,0 +1,196 @@
+name: Build SukiSU Nova kernel for ColorOS (LineageOS 24.0 base)
+
+on:
+  workflow_dispatch:
+
+env:
+  ARCH: arm64
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_motorola_sm6375.git
+  KERNEL_BRANCH: "lineage-24.0"
+  PROTON_CLANG_URL: https://codeload.github.com/kdrag0n/proton-clang/zip/refs/heads/master
+  MAGISK_APK_URL: https://github.com/topjohnwu/Magisk/releases/download/v31.1/Magisk-v31.1.apk
+  SUKISU_REPO: https://github.com/SukiSU-Nova/SukiSU-Nova
+  SUKISU_BRANCH: builtin
+  BOOT_BASE_URL: https://github.com/${{ github.repository }}/releases/download/boot-base/boot_coloros_orig.img
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout build files
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf bc bison flex libssl-dev unzip binutils ccache
+
+      - name: Clone kernel source (LineageOS 24.0 fogos)
+        run: |
+          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
+          cd kernel
+          git log --oneline -1
+          grep -E "^SUBLEVEL" Makefile
+
+      - name: Cache toolchain
+        id: tccache
+        uses: actions/cache@v4
+        with:
+          path: ~/tc
+          key: tc-proton-v1
+
+      - name: Download toolchain (proton-clang)
+        if: steps.tccache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/tc"
+          curl -LSs -o "$HOME/tc/proton.zip" "$PROTON_CLANG_URL"
+          unzip -q "$HOME/tc/proton.zip" -d "$HOME/tc"
+          # remove old GNU ld that cannot link host tools against modern glibc (RELR)
+          rm -f "$HOME/tc/proton-clang-master/bin/ld" "$HOME/tc/proton-clang-master/bin/ld.gold"
+          echo "PROTON_BIN=$HOME/tc/proton-clang-master/bin" >> "$GITHUB_ENV"
+
+      - name: Set toolchain path (cache hit)
+        if: steps.tccache.outputs.cache-hit == 'true'
+        run: echo "PROTON_BIN=$HOME/tc/proton-clang-master/bin" >> "$GITHUB_ENV"
+
+      - name: Cache ccache objects
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-coloros-los-${{ github.run_id }}
+          restore-keys: |
+            ccache-coloros-los-
+
+      - name: Download magiskboot (x86_64, from Magisk APK)
+        run: |
+          curl -LSs -o /tmp/Magisk.apk "$MAGISK_APK_URL"
+          unzip -j /tmp/Magisk.apk "lib/x86_64/libmagiskboot.so" -d /tmp/mb
+          chmod +x /tmp/mb/libmagiskboot.so
+          echo "MAGISKBOOT=/tmp/mb/libmagiskboot.so" >> "$GITHUB_ENV"
+
+      - name: Unpack ColorOS boot.img and inspect original kernel
+        run: |
+          mkdir -p repack && cd repack
+          curl -LSs -o boot_coloros.img "$BOOT_BASE_URL"
+          ls -l boot_coloros.img
+          "$MAGISKBOOT" unpack boot_coloros.img
+          ls -l
+          echo "=== original kernel version string ==="
+          grep -a -m3 -oE "Linux version [0-9][^ ]*" kernel || true
+
+      - name: Integrate SukiSU Nova (builtin branch, manual hooks)
+        run: |
+          cd kernel
+          git clone --depth=1 -b "$SUKISU_BRANCH" "$SUKISU_REPO" KernelSU
+          ln -sf "$(realpath --relative-to=drivers KernelSU/kernel)" drivers/kernelsu
+          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          # 5.4 compat: static_call.h only exists on 5.10+ and is unused by KSU
+          sed -i '/#include <linux\/static_call.h>/d' KernelSU/kernel/kernel_includes.h
+
+      - name: Apply manual hook patches (kernel 5.4)
+        run: |
+          cd kernel
+          git apply --verbose ../patches/0001-sukisu-nova-manual-hooks-5.4.patch ../patches/0003-newfstat-ret-hook.patch
+
+      - name: Configure kernel (ColorOS config via extract-ikconfig + dynamic vermagic)
+        run: |
+          cd kernel
+          mkdir -p out
+          # 1) extract the exact config embedded in the ColorOS kernel
+          if chmod +x scripts/extract-ikconfig && scripts/extract-ikconfig ../repack/kernel > out/.config 2>/dev/null && [ -s out/.config ]; then
+            echo "CONFIG SOURCE: extract-ikconfig (exact ColorOS kernel config)"
+          else
+            echo "CONFIG SOURCE: fallback to holi-qgki_defconfig"
+            make O=out ARCH=$ARCH holi-qgki_defconfig
+            cp out/.config out/.config.defconfig
+            cp out/.config.defconfig out/.config
+          fi
+          # 2) SukiSU Nova flags
+          ./scripts/config --file out/.config \
+            -e KSU \
+            -e KPM \
+            -e KALLSYMS \
+            -e KALLSYMS_ALL \
+            -d KSU_SUSFS \
+            -d CC_WERROR \
+            -d LTO \
+            -d THINLTO \
+            -d LTO_CLANG
+          # 3) dynamic vermagic: match the ColorOS kernel release string exactly
+          KVER=$(grep -a -m1 -oE "Linux version [0-9]+\.[0-9]+\.[0-9]+[^ ]*" ../repack/kernel | head -1 | awk '{print $3}')
+          echo "TARGET KERNEL RELEASE: $KVER"
+          MAJMIN=$(echo "$KVER" | grep -oE "^[0-9]+\.[0-9]+")
+          SUB=$(echo "$KVER" | grep -oE "^[0-9]+\.[0-9]+\.[0-9]+" | cut -d. -f3)
+          REST=${KVER#"$MAJMIN.$SUB"}
+          sed -i "s/^SUBLEVEL = .*/SUBLEVEL = $SUB/" Makefile
+          # empty .scmversion makes setlocalversion return "" instead of "+" on this untagged shallow clone
+          printf '' > .scmversion
+          ./scripts/config --file out/.config -d LOCALVERSION_AUTO --set-str LOCALVERSION "$REST"
+          make O=out ARCH=$ARCH olddefconfig
+          echo "=== relevant config ==="
+          grep -E "CONFIG_(KSU|KPM|KALLSYMS|CC_WERROR|KSU_SUSFS|LOCALVERSION|LTO)[= ]" out/.config || true
+
+      - name: Build kernel + modules
+        run: |
+          export PATH="$PROTON_BIN:$PATH"
+          export CCACHE_DIR="$HOME/.ccache"
+          export CCACHE_MAXSIZE=8G
+          export CCACHE_SLOPPINESS="file_macro,time_macros,include_file_mtime,include_file_ctime"
+          cd kernel
+          set -o pipefail
+          MAKE_ARGS=(O=out ARCH=$ARCH
+            CC="ccache clang" LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf-)
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" Image 2>&1 | tee ../build.log
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" modules 2>&1 | tee -a ../build.log
+          echo "=== UTS_RELEASE (must match ColorOS kernel) ==="
+          cat out/include/generated/utsrelease.h || true
+          ls -l out/arch/arm64/boot/Image
+          echo "=== KSU objects built ==="
+          find out/drivers -path '*kernelsu*' -name '*.o' | head -5
+
+      - name: Repack ColorOS boot.img (keep original dtb/ramdisk/header)
+        run: |
+          cd repack
+          cp ../kernel/out/arch/arm64/boot/Image kernel
+          "$MAGISKBOOT" repack boot_coloros.img new-boot.img
+          ls -l new-boot.img
+          cd ..
+
+      - name: Collect vendor modules
+        run: |
+          mkdir -p modules_out
+          find kernel/out -name '*.ko' -exec cp {} modules_out/ \;
+          ls modules_out | head -30
+          tar -czf modules_coloros.tar.gz -C modules_out .
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-coloros-los
+          path: build.log
+
+      - name: Upload boot image + modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: sukisu-nova-fogos-coloros-los
+          path: |
+            repack/new-boot.img
+            modules_coloros.tar.gz
+
+      - name: Upload config for reference
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-config-coloros-los
+          path: kernel/out/.config
+          include-hidden-files: true
