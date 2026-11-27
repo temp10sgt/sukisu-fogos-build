@@ -112,7 +112,7 @@ jobs:
             -d LTO \
             -d THINLTO \
             -d LTO_CLANG \
-            -u LOCALVERSION_AUTO \
+            -d LOCALVERSION_AUTO \
             --set-str LOCALVERSION "-WKCW/d526d46d"
           make O=out ARCH=$ARCH olddefconfig
           echo "=== relevant config ==="

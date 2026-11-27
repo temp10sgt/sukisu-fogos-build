@@ -130,7 +130,7 @@ jobs:
           SUB=$(echo "$KVER" | grep -oE "^[0-9]+\.[0-9]+\.[0-9]+" | cut -d. -f3)
           REST=${KVER#"$MAJMIN.$SUB"}
           sed -i "s/^SUBLEVEL = .*/SUBLEVEL = $SUB/" Makefile
-          ./scripts/config --file out/.config -u LOCALVERSION_AUTO --set-str LOCALVERSION "$REST"
+          ./scripts/config --file out/.config -d LOCALVERSION_AUTO --set-str LOCALVERSION "$REST"
           make O=out ARCH=$ARCH olddefconfig
           echo "=== relevant config ==="
           grep -E "CONFIG_(KSU|KPM|KALLSYMS|CC_WERROR|KSU_SUSFS|LOCALVERSION|LTO)[= ]" out/.config || true
